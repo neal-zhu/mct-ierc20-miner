@@ -303,8 +303,6 @@ func startMine(cfg *MineCfg) error {
 					copy(rlpData[callDataIndex:], []byte(callData))
 					sha.Reset()
 					sha.Write(rlpData)
-					// 02f8df 0129849266aaea8505b802acde8261a894000000000000000000000000000000000000000080b873646174613a6170706c69636174696f6e2f6a736f6e2c7b2270223a22696572632d706f77222c226f70223a226d696e74222c227469636b223a226574687069222c22626c6f636b223a223138393936383030222c226e6f6e6365223a223030303030303030303030303030303030303030227dc0
-					// 02f89c 0129849266aaea8505b802acde8261a894000000000000000000000000000000000000000080b873646174613a6170706c69636174696f6e2f6a736f6e2c7b2270223a22696572632d706f77222c226f70223a226d696e74222c227469636b223a226574687069222c22626c6f636b223a223138393936383030222c226e6f6e6365223a223030303030303030303030303030303030303030227dc0
 					var hash common.Hash
 					sha.Read(hash[:])
 					sig, err := crypto.Sign(hash[:], pk)
@@ -324,38 +322,37 @@ func startMine(cfg *MineCfg) error {
 					rlp.Encode(buf, r)
 					rlp.Encode(buf, s)
 					sha.Reset()
-
 					copy(txRlpData[txCallDataIndex:], []byte(callData))
 					copy(txRlpData[len(txRlpData)-buf.Len():], buf.Bytes())
+					//log.Printf("txRlpData %x", txRlpData)
+					//log.Printf("rsv %x", buf.Bytes())
 					sha.Write(txRlpData)
 					sha.Read(hash[:])
 					if strings.HasPrefix(hash.String(), cfg.DIfficulty) {
-						{
-							tx := types.NewTx(&types.DynamicFeeTx{
-								ChainID:   big.NewInt(1),
-								Nonce:     nonce,
-								GasFeeCap: maxFeePerGas,
-								GasTipCap: maxPriorityFeePerGas,
-								To:        &nullAddress,
-								Value:     big.NewInt(0),
-								Data:      []byte(callData),
-								Gas:       25000,
-							})
-							tx, err := types.SignTx(tx, signer, pk)
-							if err != nil {
-								log.Fatalf("SignTx error: %v", err)
-							}
-							vv, rr, ss := tx.RawSignatureValues()
-							if vv.Cmp(v) != 0 || rr.Cmp(r) != 0 || ss.Cmp(s) != 0 {
-								log.Fatalf("SignTx error: rsv not equal")
-							}
-							xhash := tx.Hash()
-							printTx(tx)
-							if !bytes.Equal(xhash[:], hash[:]) {
-								log.Fatalf("hash error: %x %x", xhash, hash)
-							}
-							log.Println("hash", hash.String())
+						tx := types.NewTx(&types.DynamicFeeTx{
+							ChainID:   big.NewInt(1),
+							Nonce:     nonce,
+							GasFeeCap: maxFeePerGas,
+							GasTipCap: maxPriorityFeePerGas,
+							To:        &nullAddress,
+							Value:     big.NewInt(0),
+							Data:      []byte(callData),
+							Gas:       25000,
+						})
+						tx, err := types.SignTx(tx, signer, pk)
+						if err != nil {
+							log.Fatalf("SignTx error: %v", err)
 						}
+						vv, rr, ss := tx.RawSignatureValues()
+						if vv.Cmp(v) != 0 || rr.Cmp(r) != 0 || ss.Cmp(s) != 0 {
+							log.Fatalf("SignTx error: rsv not equal")
+						}
+						xhash := tx.Hash()
+						printTx(tx)
+						if !bytes.Equal(xhash[:], hash[:]) {
+							log.Fatalf("hash error: %x %x", xhash, hash)
+						}
+						log.Println("hash", hash.String())
 						cbn, err := client.BlockNumber(context.Background())
 						if err != nil {
 							continue
