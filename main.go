@@ -214,7 +214,14 @@ func startMine(cfg *MineCfg) error {
 				default:
 					now := time.Now().UnixMilli()
 					bn := atomic.LoadUint64(&blockNumber)
-					callData := fmt.Sprintf(`data:application/json,{"p":"ierc-pow","op":"mint","tick":"%s","block":"%d","nonce":"%d%d%d"}`, ticker, atomic.LoadUint64(&blockNumber), now, i, id)
+					nonceStr := fmt.Sprintf("%d%d%d", now, i, id)
+					if len(nonceStr) > 20 {
+						nonceStr = fmt.Sprintf("%d%d%d", now/10, i, id)
+					}
+					if len(nonceStr) > 20 {
+						panic("nonceStr too long")
+					}
+					callData := fmt.Sprintf(`data:application/json,{"p":"ierc-pow","op":"mint","tick":"%s","block":"%d","nonce":"%s"}`, ticker, atomic.LoadUint64(&blockNumber), nonceStr)
 					data := common.Hex2Bytes(stringToHex(callData))
 					tx := types.NewTx(&types.DynamicFeeTx{
 						ChainID:   big.NewInt(1),
