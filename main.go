@@ -194,6 +194,9 @@ func startMine(cfg *MineCfg) error {
 		maxPriorityFeePerGas = ToWei(priorityFee, 9)
 	}
 	nonce, err := client.NonceAt(context.Background(), fromAddress, nil)
+	if err != nil {
+		log.Fatalf("NonceAt error: %v", err)
+	}
 	log.Println("MaxFee: ", ToDecimal(maxFeePerGas, 9).String(), "Gwei", ", Priority Fee: ", ToDecimal(maxPriorityFeePerGas, 9).String(), "Gwei")
 	nullAddress := common.HexToAddress("0x0000000000000000000000000000000000000000")
 	var total int64 = 0
@@ -202,6 +205,18 @@ func startMine(cfg *MineCfg) error {
 	defer cancel()
 	inscribeTx := make(chan Sol, runtime.NumCPU())
 	generateReport := make(chan int, runtime.NumCPU())
+	//nonceStr := fmt.Sprintf("%020s", fmt.Sprintf("%d%d", 0, 0))
+	//callData := fmt.Sprintf(`data:application/json,{"p":"ierc-pow","op":"mint","tick":"%s","block":"%d","nonce":"%s"}`, ticker, 18994742, nonceStr)
+	//tx := types.NewTx(&types.DynamicFeeTx{
+	//	ChainID:   big.NewInt(1),
+	//	Nonce:     nonce,
+	//	GasFeeCap: maxFeePerGas,
+	//	GasTipCap: maxPriorityFeePerGas,
+	//	To:        &nullAddress,
+	//	Value:     big.NewInt(0),
+	//	Data:      []byte(callData),
+	//	Gas:       25000,
+	//})
 	for i := 0; i < runtime.NumCPU(); i++ {
 		go func(i int) {
 			id := 0
@@ -212,13 +227,9 @@ func startMine(cfg *MineCfg) error {
 					log.Println("stop")
 					return
 				default:
-					now := time.Now().UnixMilli()
 					bn := atomic.LoadUint64(&blockNumber)
-					nonceStr := fmt.Sprintf("%d%d%d", now, i, id)
-					if len(nonceStr) > 20 {
-						nonceStr = nonceStr[:20]
-					}
-					callData := fmt.Sprintf(`data:application/json,{"p":"ierc-pow","op":"mint","tick":"%s","block":"%d","nonce":"%s"}`, ticker, atomic.LoadUint64(&blockNumber), nonceStr)
+					nonceStr := fmt.Sprintf("%020s", fmt.Sprintf("%d%d", i, id))
+					callData := fmt.Sprintf(`data:application/json,{"p":"ierc-pow","op":"mint","tick":"%s","block":"%d","nonce":"%s"}`, ticker, bn, nonceStr)
 					data := []byte(callData)
 					tx := types.NewTx(&types.DynamicFeeTx{
 						ChainID:   big.NewInt(1),
@@ -231,6 +242,9 @@ func startMine(cfg *MineCfg) error {
 						Gas:       25000,
 					})
 					tx, _ = types.SignTx(tx, types.LatestSignerForChainID(big.NewInt(1)), pk)
+					//w := bytes.NewBuffer(nil)
+					//tx.EncodeRLP(w)
+					//log.Printf("data index %d data len %d %s", bytes.Index(w.Bytes(), data), len(data), nonceStr)
 					hash := tx.Hash().String()
 					if strings.HasPrefix(hash, cfg.DIfficulty) {
 						cbn, err := client.BlockNumber(context.Background())
