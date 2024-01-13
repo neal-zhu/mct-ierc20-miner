@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"encoding/hex"
@@ -17,6 +18,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/shopspring/decimal"
 	"github.com/urfave/cli"
 )
@@ -154,6 +156,29 @@ type MineCfg struct {
 	PriorityFee float64
 }
 
+func rlpEnc(v any) []byte {
+	w := bytes.NewBuffer(nil)
+	rlp.Encode(w, v)
+	return w.Bytes()
+}
+
+func printTx(tx *types.Transaction) {
+	//fmt.Println("Nonce: ", tx.Nonce())
+	//fmt.Println("GasPrice: ", tx.GasPrice())
+	//fmt.Println("Gas: ", tx.Gas())
+	//fmt.Println("To: ", tx.To().Hex())
+	//fmt.Println("Value: ", tx.Value())
+	//fmt.Println("Data: ", hex.EncodeToString(tx.Data()))
+	v, r, s := tx.RawSignatureValues()
+	fmt.Println("V: ", hex.EncodeToString(rlpEnc(v)))
+	fmt.Println("R: ", hex.EncodeToString(rlpEnc(r)))
+	fmt.Println("S: ", hex.EncodeToString(rlpEnc(s)))
+	fmt.Println("Hash: ", tx.Hash().Hex())
+
+	data, _ := rlp.EncodeToBytes(tx)
+	fmt.Println("RLP: ", hex.EncodeToString(data))
+}
+
 func startMine(cfg *MineCfg) error {
 
 	client, err := ethclient.Dial(cfg.RPC)
@@ -203,24 +228,68 @@ func startMine(cfg *MineCfg) error {
 
 	threadCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	inscribeTx := make(chan Sol, runtime.NumCPU())
-	generateReport := make(chan int, runtime.NumCPU())
-	//nonceStr := fmt.Sprintf("%020s", fmt.Sprintf("%d%d", 0, 0))
-	//callData := fmt.Sprintf(`data:application/json,{"p":"ierc-pow","op":"mint","tick":"%s","block":"%d","nonce":"%s"}`, ticker, 18994742, nonceStr)
-	//tx := types.NewTx(&types.DynamicFeeTx{
-	//	ChainID:   big.NewInt(1),
-	//	Nonce:     nonce,
-	//	GasFeeCap: maxFeePerGas,
-	//	GasTipCap: maxPriorityFeePerGas,
-	//	To:        &nullAddress,
-	//	Value:     big.NewInt(0),
-	//	Data:      []byte(callData),
-	//	Gas:       25000,
-	//})
-	for i := 0; i < runtime.NumCPU(); i++ {
+	numThread := runtime.NumCPU()
+	inscribeTx := make(chan Sol, numThread)
+	generateReport := make(chan int, numThread)
+	for i := 0; i < numThread; i++ {
 		go func(i int) {
+			var sha = crypto.NewKeccakState()
 			id := 0
 			generated := 0
+			signer := types.LatestSignerForChainID(big.NewInt(1))
+			var (
+				bn      uint64
+				rlpData []byte
+			)
+			for {
+				bn = atomic.LoadUint64(&blockNumber)
+				if bn != 0 {
+					break
+				}
+			}
+
+			nonceStr := fmt.Sprintf("%020s", fmt.Sprintf("%d%d", 0, 0))
+			callData := fmt.Sprintf(`data:application/json,{"p":"ierc-pow","op":"mint","tick":"%s","block":"%d","nonce":"%s"}`, ticker, bn, nonceStr)
+			r, _ := new(big.Int).SetString("56950464317369334027208064042576072815920500984782267917076891192816636520127", 10)
+			innerTx := &types.DynamicFeeTx{
+				ChainID:   big.NewInt(1),
+				Nonce:     nonce,
+				GasFeeCap: maxFeePerGas,
+				GasTipCap: maxPriorityFeePerGas,
+				To:        &nullAddress,
+				Value:     big.NewInt(0),
+				Data:      []byte(callData),
+				Gas:       25000,
+				V:         big.NewInt(1),
+				R:         r,
+				S:         r,
+			}
+			tx := types.NewTx(innerTx)
+			w := bytes.NewBuffer(nil)
+			w.Write([]byte{tx.Type()})
+			rlp.Encode(w, []interface{}{
+				tx.ChainId(),
+				tx.Nonce(),
+				tx.GasTipCap(),
+				tx.GasFeeCap(),
+				tx.Gas(),
+				tx.To(),
+				tx.Value(),
+				tx.Data(),
+				tx.AccessList(),
+			})
+			//tx.EncodeRLP(w)
+			rlpData = w.Bytes()
+			callDataIndex := bytes.Index(rlpData, []byte(callData))
+
+			w = bytes.NewBuffer(nil)
+			w.Write([]byte{tx.Type()})
+			rlp.Encode(
+				w, innerTx,
+			)
+			txRlpData := w.Bytes()
+			txCallDataIndex := bytes.Index(txRlpData, []byte(callData))
+
 			for {
 				select {
 				case <-threadCtx.Done():
@@ -228,25 +297,65 @@ func startMine(cfg *MineCfg) error {
 					return
 				default:
 					bn := atomic.LoadUint64(&blockNumber)
-					nonceStr := fmt.Sprintf("%020s", fmt.Sprintf("%d%d", i, id))
-					callData := fmt.Sprintf(`data:application/json,{"p":"ierc-pow","op":"mint","tick":"%s","block":"%d","nonce":"%s"}`, ticker, bn, nonceStr)
-					data := []byte(callData)
-					tx := types.NewTx(&types.DynamicFeeTx{
-						ChainID:   big.NewInt(1),
-						Nonce:     nonce,
-						GasFeeCap: maxFeePerGas,
-						GasTipCap: maxPriorityFeePerGas,
-						To:        &nullAddress,
-						Value:     big.NewInt(0),
-						Data:      data,
-						Gas:       25000,
-					})
-					tx, _ = types.SignTx(tx, types.LatestSignerForChainID(big.NewInt(1)), pk)
-					//w := bytes.NewBuffer(nil)
-					//tx.EncodeRLP(w)
-					//log.Printf("data index %d data len %d %s", bytes.Index(w.Bytes(), data), len(data), nonceStr)
-					hash := tx.Hash().String()
-					if strings.HasPrefix(hash, cfg.DIfficulty) {
+					nonceStr = fmt.Sprintf("%020s", fmt.Sprintf("%d%d", i, id))
+					callData = fmt.Sprintf(`data:application/json,{"p":"ierc-pow","op":"mint","tick":"%s","block":"%d","nonce":"%s"}`, ticker, bn, nonceStr)
+					// 计算签名
+					copy(rlpData[callDataIndex:], []byte(callData))
+					sha.Reset()
+					sha.Write(rlpData)
+					// 02f8df 0129849266aaea8505b802acde8261a894000000000000000000000000000000000000000080b873646174613a6170706c69636174696f6e2f6a736f6e2c7b2270223a22696572632d706f77222c226f70223a226d696e74222c227469636b223a226574687069222c22626c6f636b223a223138393936383030222c226e6f6e6365223a223030303030303030303030303030303030303030227dc0
+					// 02f89c 0129849266aaea8505b802acde8261a894000000000000000000000000000000000000000080b873646174613a6170706c69636174696f6e2f6a736f6e2c7b2270223a22696572632d706f77222c226f70223a226d696e74222c227469636b223a226574687069222c22626c6f636b223a223138393936383030222c226e6f6e6365223a223030303030303030303030303030303030303030227dc0
+					var hash common.Hash
+					sha.Read(hash[:])
+					sig, err := crypto.Sign(hash[:], pk)
+					if err != nil {
+						log.Fatalf("Sign error: %v", err)
+					}
+					r, s, v, err := signer.SignatureValues(tx, sig)
+					//fmt.Printf("V %x\n", rlpEnc(v))
+					//fmt.Printf("R %x\n", rlpEnc(r))
+					//fmt.Printf("S %x\n", rlpEnc(s))
+					if err != nil {
+						log.Fatalf("SignatureValues error: %v", err)
+					}
+
+					buf := bytes.NewBuffer(nil)
+					rlp.Encode(buf, v)
+					rlp.Encode(buf, r)
+					rlp.Encode(buf, s)
+					sha.Reset()
+
+					copy(txRlpData[txCallDataIndex:], []byte(callData))
+					copy(txRlpData[len(txRlpData)-buf.Len():], buf.Bytes())
+					sha.Write(txRlpData)
+					sha.Read(hash[:])
+					if strings.HasPrefix(hash.String(), cfg.DIfficulty) {
+						{
+							tx := types.NewTx(&types.DynamicFeeTx{
+								ChainID:   big.NewInt(1),
+								Nonce:     nonce,
+								GasFeeCap: maxFeePerGas,
+								GasTipCap: maxPriorityFeePerGas,
+								To:        &nullAddress,
+								Value:     big.NewInt(0),
+								Data:      []byte(callData),
+								Gas:       25000,
+							})
+							tx, err := types.SignTx(tx, signer, pk)
+							if err != nil {
+								log.Fatalf("SignTx error: %v", err)
+							}
+							vv, rr, ss := tx.RawSignatureValues()
+							if vv.Cmp(v) != 0 || rr.Cmp(r) != 0 || ss.Cmp(s) != 0 {
+								log.Fatalf("SignTx error: rsv not equal")
+							}
+							xhash := tx.Hash()
+							printTx(tx)
+							if !bytes.Equal(xhash[:], hash[:]) {
+								log.Fatalf("hash error: %x %x", xhash, hash)
+							}
+							log.Println("hash", hash.String())
+						}
 						cbn, err := client.BlockNumber(context.Background())
 						if err != nil {
 							continue
