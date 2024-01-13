@@ -5,23 +5,31 @@ import (
 	"crypto/ecdsa"
 	"encoding/hex"
 	"fmt"
+	"log"
+	"math/big"
+	"os"
+	"runtime"
+	"strings"
+	"sync/atomic"
+	"time"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/shopspring/decimal"
 	"github.com/urfave/cli"
-	"log"
-	"math/big"
-	"os"
-	"runtime"
-	"strings"
-	"time"
 )
 
 var (
-	app *cli.App = cli.NewApp()
+	app         *cli.App = cli.NewApp()
+	blockNumber uint64
 )
+
+type Sol struct {
+	tx *types.Transaction
+	bn uint64
+}
 
 func init() {
 	app.Name = "IERC20 Miner"
@@ -51,11 +59,6 @@ func init() {
 					Name:  "pk",
 					Value: "",
 					Usage: "PrivateKey",
-				},
-				&cli.Int64Flag{
-					Name:  "amount",
-					Value: 1000,
-					Usage: "Amount",
 				},
 				&cli.Float64Flag{
 					Name:  "maxFee",
@@ -113,6 +116,23 @@ func mine(ctx *cli.Context) error {
 		MaxFee:      ctx.Float64("maxFee"),
 		PriorityFee: ctx.Float64("priorityFee"),
 	}
+	go func() {
+		// udpate block number
+		client, err := ethclient.Dial(config.RPC)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Rpc connect error "+err.Error())
+			return
+		}
+		defer client.Close()
+		for {
+			bn, err := client.BlockNumber(context.Background())
+			if err != nil {
+				continue
+			}
+			atomic.StoreUint64(&blockNumber, bn)
+			time.Sleep(5 * time.Second)
+		}
+	}()
 	for i := 0; i < int(ctx.Float64("n")); i++ {
 		fmt.Println(fmt.Sprintf("====================================================== %d ======================================================", i+1))
 		if err := startMine(config); err != nil {
@@ -180,7 +200,7 @@ func startMine(cfg *MineCfg) error {
 
 	threadCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	inscribeTx := make(chan *types.Transaction, 1)
+	inscribeTx := make(chan Sol, runtime.NumCPU())
 	generateReport := make(chan int, runtime.NumCPU())
 	for i := 0; i < runtime.NumCPU(); i++ {
 		go func(i int) {
@@ -192,8 +212,9 @@ func startMine(cfg *MineCfg) error {
 					log.Println("stop")
 					return
 				default:
-					now := time.Now().UnixNano()
-					callData := fmt.Sprintf(`data:application/json,{"p":"ierc-20","op":"mint","tick":"%s","amt":"%d","nonce":"%d%d%d"}`, ticker, cfg.Amount, now, i, id)
+					now := time.Now().UnixMilli()
+					bn := atomic.LoadUint64(&blockNumber)
+					callData := fmt.Sprintf(`data:application/json,{"p":"ierc-pow","op":"mint","tick":"%s","block":"%d","nonce":"%d%d%d"}`, ticker, atomic.LoadUint64(&blockNumber), now, i, id)
 					data := common.Hex2Bytes(stringToHex(callData))
 					tx := types.NewTx(&types.DynamicFeeTx{
 						ChainID:   big.NewInt(1),
@@ -207,9 +228,19 @@ func startMine(cfg *MineCfg) error {
 					})
 					tx, _ = types.SignTx(tx, types.LatestSignerForChainID(big.NewInt(1)), pk)
 					hash := tx.Hash().String()
-					if strings.Contains(hash, cfg.DIfficulty) {
-						log.Println("Found CallData", callData)
-						inscribeTx <- tx
+					if strings.HasPrefix(hash, cfg.DIfficulty) {
+						cbn, err := client.BlockNumber(context.Background())
+						if err != nil {
+							continue
+						}
+						if cbn-bn > 5 {
+							log.Println("BlockNumber", bn, "too stale", cbn)
+							continue
+						}
+						inscribeTx <- Sol{
+							tx: tx,
+							bn: bn,
+						}
 					}
 					id++
 					generated++
@@ -218,7 +249,6 @@ func startMine(cfg *MineCfg) error {
 						generated = 0
 					}
 				}
-
 			}
 		}(i)
 	}
@@ -231,9 +261,8 @@ func startMine(cfg *MineCfg) error {
 		case generated := <-generateReport:
 			total += int64(generated)
 		case inscribeTx := <-inscribeTx:
-			log.Println("Inscribe tx", inscribeTx.Hash().String())
-			if err := client.SendTransaction(context.Background(), inscribeTx); err != nil {
-
+			log.Println("Inscribe tx", inscribeTx.tx.Hash().String(), "bn", inscribeTx.bn)
+			if err := client.SendTransaction(context.Background(), inscribeTx.tx); err != nil {
 				return fmt.Errorf("SendTransaction error: %w", err)
 			}
 			return nil
