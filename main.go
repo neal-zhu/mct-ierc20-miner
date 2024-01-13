@@ -265,6 +265,15 @@ func startMine(cfg *MineCfg) error {
 			if err := client.SendTransaction(context.Background(), inscribeTx.tx); err != nil {
 				return fmt.Errorf("SendTransaction error: %w", err)
 			}
+			for i := 0; i < 10; i++ {
+				_, err := client.TransactionReceipt(context.Background(), inscribeTx.tx.Hash())
+				if err != nil {
+					time.Sleep(1 * time.Second)
+					continue
+				}
+				log.Println("Success", inscribeTx.tx.Hash().String())
+				break
+			}
 			return nil
 		}
 
