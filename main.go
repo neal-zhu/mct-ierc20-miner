@@ -1,5 +1,11 @@
 package main
 
+/*
+void mcm_cuda_keccak_hash_batch(unsigned char* in, int inlen, unsigned char* out, int n_outbit, int n_batch);
+#cgo LDFLAGS: -L. -L./ -lkeccak
+*/
+import "C"
+
 import (
 	"bytes"
 	"context"
@@ -22,6 +28,20 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/urfave/cli"
 )
+
+func KeccakHash(in []byte) common.Hash {
+	var out common.Hash
+	C.mcm_cuda_keccak_hash_batch((*C.uchar)(&in[0]), C.int(len(in)), (*C.uchar)(&out[0]), C.int(256), C.int(1))
+	return out
+}
+
+func CPUKeccakHash(in []byte) common.Hash {
+	var out common.Hash
+	sha := crypto.NewKeccakState()
+	sha.Write(in)
+	sha.Read(out[:])
+	return out
+}
 
 var (
 	app         *cli.App = cli.NewApp()
@@ -233,7 +253,7 @@ func startMine(cfg *MineCfg) error {
 	generateReport := make(chan int, numThread)
 	for i := 0; i < numThread; i++ {
 		go func(i int) {
-			var sha = crypto.NewKeccakState()
+			//var sha = crypto.NewKeccakState()
 			id := 0
 			generated := 0
 			signer := types.LatestSignerForChainID(big.NewInt(1))
@@ -278,7 +298,6 @@ func startMine(cfg *MineCfg) error {
 				tx.Data(),
 				tx.AccessList(),
 			})
-			//tx.EncodeRLP(w)
 			rlpData = w.Bytes()
 			callDataIndex := bytes.Index(rlpData, []byte(callData))
 
@@ -301,10 +320,11 @@ func startMine(cfg *MineCfg) error {
 					callData = fmt.Sprintf(`data:application/json,{"p":"ierc-pow","op":"mint","tick":"%s","block":"%d","nonce":"%s"}`, ticker, bn, nonceStr)
 					// 计算签名
 					copy(rlpData[callDataIndex:], []byte(callData))
-					sha.Reset()
-					sha.Write(rlpData)
-					var hash common.Hash
-					sha.Read(hash[:])
+					hash := CPUKeccakHash(rlpData)
+					//sha.Reset()
+					//sha.Write(rlpData)
+					//var hash common.Hash
+					//sha.Read(hash[:])
 					sig, err := crypto.Sign(hash[:], pk)
 					if err != nil {
 						log.Fatalf("Sign error: %v", err)
@@ -321,13 +341,14 @@ func startMine(cfg *MineCfg) error {
 					rlp.Encode(buf, v)
 					rlp.Encode(buf, r)
 					rlp.Encode(buf, s)
-					sha.Reset()
 					copy(txRlpData[txCallDataIndex:], []byte(callData))
 					copy(txRlpData[len(txRlpData)-buf.Len():], buf.Bytes())
 					//log.Printf("txRlpData %x", txRlpData)
 					//log.Printf("rsv %x", buf.Bytes())
-					sha.Write(txRlpData)
-					sha.Read(hash[:])
+					//sha.Reset()
+					//sha.Write(txRlpData)
+					//sha.Read(hash[:])
+					hash = CPUKeccakHash(txRlpData)
 					if strings.HasPrefix(hash.String(), cfg.DIfficulty) {
 						tx := types.NewTx(&types.DynamicFeeTx{
 							ChainID:   big.NewInt(1),
